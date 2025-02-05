@@ -4,11 +4,18 @@ const DefaultPrng = std.rand.DefaultPrng;
 const Random = std.Random;
 const meta_eql = std.meta.eql;
 const expect = std.testing.expect;
+
+// A skip list is a probabilistic data structure that allows for O(log n) average case search, insert and delete operations.
+// It maintains multiple layers of linked lists, with each higher layer being a "fast lane" that skips over elements,
+// allowing for faster traversal than a regular linked list.
+
+// TODO: Implement concurrency control.
+
 const max_levels: usize = 32;
 const p_value: f32 = 0.5;
 
 const SkipListErrors = error{
-    OutOfRange,
+    NotFound,
 };
 
 pub fn SkipList(
@@ -71,7 +78,7 @@ pub fn SkipList(
             }
         }
 
-        pub fn find(self: *Self, key: K) !V {
+        pub fn find(self: *Self, key: K) SkipListErrors!V {
             var current: ?*Node = self.head;
             var i = self.level;
             while (i >= 0) : (i -= 1) {
@@ -196,6 +203,8 @@ test "SkipList Non-Parallel" {
     try expect(try skip_list.find(5) == 6);
     try expect(try skip_list.find(6) == 7);
     try expect(try skip_list.find(7) == 8);
+
+    try expect(skip_list.find(8) == SkipListErrors.NotFound);
 
     skip_list.remove(1);
     skip_list.remove(2);
