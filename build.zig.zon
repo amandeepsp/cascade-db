@@ -1,0 +1,9 @@
+.{
+    .name = "cascade-db",
+    .version = "0.0.0",
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
+    },
+}
