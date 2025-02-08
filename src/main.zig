@@ -1,5 +1,4 @@
 const std = @import("std");
-const SkipList = @import("skiplist.zig").SkipList;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

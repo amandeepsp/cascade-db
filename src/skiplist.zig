@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const DefaultPrng = std.rand.DefaultPrng;
 const Random = std.Random;
-const meta_eql = std.meta.eql;
+const metaEql = std.meta.eql;
 const expect = std.testing.expect;
 
 // A skip list is a probabilistic data structure that allows for O(log n) average case search, insert and delete operations.
@@ -21,7 +21,7 @@ const SkipListErrors = error{
 pub fn SkipList(
     comptime K: type,
     comptime V: type,
-    comptime less_than_fn: fn (a: K, b: K) bool,
+    comptime lessThanFn: fn (a: K, b: K) bool,
 ) type {
     return struct {
         const Self = @This();
@@ -30,7 +30,7 @@ pub fn SkipList(
             value: V,
             forward: []?*Node,
 
-            pub fn init_head(allocator: *Allocator) *Node {
+            pub fn initHead(allocator: *const Allocator) *Node {
                 const head_forwards = allocator.alloc(?*Node, max_levels) catch unreachable;
                 @memset(head_forwards, null);
                 const node = allocator.create(Node) catch unreachable;
@@ -40,7 +40,7 @@ pub fn SkipList(
                 return node;
             }
 
-            pub fn init(allocator: *Allocator, key: K, value: V, level: usize) *Node {
+            pub fn init(allocator: *const Allocator, key: K, value: V, level: usize) *Node {
                 const node = allocator.create(Node) catch unreachable;
                 node.key = key;
                 node.value = value;
@@ -50,21 +50,21 @@ pub fn SkipList(
             }
         };
 
-        head: *Node,
-        allocator: *Allocator,
-        level: usize,
+        allocator: *const Allocator,
         random: Random,
+        head: *Node,
+        level: usize,
 
-        pub fn init(allocator: *Allocator) Self {
-            const head = Node.init_head(allocator);
+        pub fn init(allocator: *const Allocator) Self {
+            const head = Node.initHead(allocator);
 
             var rand_gen = DefaultPrng.init(@intCast(std.time.timestamp()));
 
             return Self{
                 .head = head,
+                .random = rand_gen.random(),
                 .allocator = allocator,
                 .level = 0,
-                .random = rand_gen.random(),
             };
         }
 
@@ -83,14 +83,14 @@ pub fn SkipList(
             var i = self.level;
             while (i >= 0) : (i -= 1) {
                 while (current.?.forward[i]) |next_node| {
-                    if (!less_than_fn(next_node.key, key)) break;
+                    if (!lessThanFn(next_node.key, key)) break;
                     current = next_node;
                 }
                 if (i == 0) break;
             }
 
             current = current.?.forward[0];
-            if (current != null and meta_eql(current.?.key, key)) {
+            if (current != null and metaEql(current.?.key, key)) {
                 return current.?.value;
             } else {
                 return SkipListErrors.NotFound;
@@ -104,7 +104,7 @@ pub fn SkipList(
             var i = self.level;
             while (i >= 0) : (i -= 1) {
                 while (current.?.forward[i]) |next_node| {
-                    if (!less_than_fn(next_node.key, key)) break;
+                    if (!lessThanFn(next_node.key, key)) break;
                     current = next_node;
                 }
                 update[i] = current;
@@ -112,10 +112,10 @@ pub fn SkipList(
             }
 
             current = current.?.forward[0];
-            if (current != null and meta_eql(current.?.key, key)) {
+            if (current != null and metaEql(current.?.key, key)) {
                 current.?.value = value;
             } else {
-                const new_level = self.random_level();
+                const new_level = self.randomLevel();
                 if (new_level > self.level) {
                     var j = self.level;
                     while (j < new_level) : (j += 1) {
@@ -141,7 +141,7 @@ pub fn SkipList(
             var i = self.level;
             while (i >= 0) : (i -= 1) {
                 while (current.?.forward[i]) |next_node| {
-                    if (!less_than_fn(next_node.key, key)) break;
+                    if (!lessThanFn(next_node.key, key)) break;
                     current = next_node;
                 }
                 update[i] = current;
@@ -149,7 +149,7 @@ pub fn SkipList(
             }
 
             current = current.?.forward[0];
-            if (current != null and meta_eql(current.?.key, key)) {
+            if (current != null and metaEql(current.?.key, key)) {
                 for (0..self.level + 1) |j| {
                     if (update[i]) |update_node| {
                         if (update_node.forward[j] != current) {
@@ -169,7 +169,7 @@ pub fn SkipList(
             }
         }
 
-        fn random_level(self: *Self) usize {
+        fn randomLevel(self: *Self) usize {
             var level: usize = 1;
             while (level < max_levels - 1 and self.random.float(f32) < p_value) {
                 level += 1;
@@ -179,13 +179,13 @@ pub fn SkipList(
     };
 }
 
-fn compare_u32(a: u32, b: u32) bool {
+fn compareU32(a: u32, b: u32) bool {
     return a < b;
 }
 
-test "SkipList Non-Parallel" {
-    var allocator = std.testing.allocator;
-    var skip_list = SkipList(u32, u32, compare_u32).init(&allocator);
+test "SkipList Non-Concurrent" {
+    const allocator = std.testing.allocator;
+    var skip_list = SkipList(u32, u32, compareU32).init(&allocator);
     defer skip_list.deinit();
 
     skip_list.insert(1, 2);
@@ -213,4 +213,41 @@ test "SkipList Non-Parallel" {
     skip_list.remove(5);
     skip_list.remove(6);
     skip_list.remove(7);
+
+    try expect(skip_list.find(1) == SkipListErrors.NotFound);
+    try expect(skip_list.find(2) == SkipListErrors.NotFound);
+    try expect(skip_list.find(3) == SkipListErrors.NotFound);
+    try expect(skip_list.find(4) == SkipListErrors.NotFound);
+    try expect(skip_list.find(5) == SkipListErrors.NotFound);
+    try expect(skip_list.find(6) == SkipListErrors.NotFound);
+    try expect(skip_list.find(7) == SkipListErrors.NotFound);
+}
+
+fn compareStrings(a: []const u8, b: []const u8) bool {
+    const order = std.mem.order(u8, a, b);
+    return order == .lt;
+}
+
+test "SkipList Non-Concurrent Strings" {
+    const allocator = std.testing.allocator;
+    var skip_list = SkipList([]const u8, []const u8, compareStrings).init(&allocator);
+    defer skip_list.deinit();
+
+    skip_list.insert("1", "2");
+    skip_list.insert("2", "3");
+    skip_list.insert("3", "4");
+
+    try expect(std.mem.eql(u8, try skip_list.find("1"), "2"));
+    try expect(std.mem.eql(u8, try skip_list.find("2"), "3"));
+    try expect(std.mem.eql(u8, try skip_list.find("3"), "4"));
+
+    try expect(skip_list.find("4") == SkipListErrors.NotFound);
+
+    skip_list.remove("1");
+    skip_list.remove("2");
+    skip_list.remove("3");
+
+    try expect(skip_list.find("1") == SkipListErrors.NotFound);
+    try expect(skip_list.find("2") == SkipListErrors.NotFound);
+    try expect(skip_list.find("3") == SkipListErrors.NotFound);
 }
