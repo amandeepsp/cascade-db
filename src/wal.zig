@@ -1,12 +1,47 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const msgpack = @import("msgpack");
 const fs = std.fs;
 const log = std.log;
 const testing = std.testing;
 const hash = std.hash;
+const mem = std.mem;
+const Allocator = std.mem.Allocator;
+const EventType = enum(u8) {
+    write = 1,
+    delete = 2,
+};
+
+const WriteEvent = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+const DeleteEvent = struct {
+    key: []const u8,
+};
+
+const Event = union(EventType) {
+    write: WriteEvent,
+    delete: DeleteEvent,
+
+    pub fn encode(self: Event, allocator: *const Allocator) ![]u8 {
+        var buffer = std.ArrayList(u8).init(allocator.*);
+        const writer = buffer.writer();
+
+        try msgpack.encode(self, writer);
+        return buffer.toOwnedSlice();
+    }
+
+    pub fn decode(buffer: []const u8, allocator: Allocator) !msgpack.Decoded(Event) {
+        var stream = std.io.fixedBufferStream(buffer);
+        const reader = stream.reader();
+
+        //TODO: Maybe replace with decodeLeaky with an arena allocator, when multiple events are decoded
+        return try msgpack.decode(Event, allocator, reader);
+    }
+};
 
 // WAL format adapted form https://github.com/facebook/rocksdb/wiki/Write-Ahead-Log-File-Format
-
 pub const WalOptions = struct {
     file_dir: fs.Dir = fs.cwd(),
     file_name: []const u8 = "wal.log",
@@ -90,7 +125,7 @@ const Record = struct {
     }
 };
 
-pub const WriteAheadLog = struct {
+pub const WriteAheadLogger = struct {
     //       +-----+-------------+--+----+----------+------+-- ... ----+
     // File  | r0  |        r1   |P | r2 |    r3    |  r4  |           |
     //       +-----+-------------+--+----+----------+------+-- ... ----+
@@ -102,7 +137,7 @@ pub const WriteAheadLog = struct {
     fd: fs.File,
     block_size: usize,
 
-    pub fn init(allocator: *const Allocator, options: WalOptions) !WriteAheadLog {
+    pub fn init(allocator: *const Allocator, options: WalOptions) !WriteAheadLogger {
         const fd = try options.file_dir.createFile(
             options.file_name,
             .{ .read = true, .truncate = false },
@@ -110,19 +145,29 @@ pub const WriteAheadLog = struct {
 
         std.debug.assert(options.block_size > Record.header_size());
 
-        return WriteAheadLog{
+        return WriteAheadLogger{
             .allocator = allocator,
             .fd = fd,
             .block_size = options.block_size,
         };
     }
 
-    pub fn deinit(self: *WriteAheadLog) void {
+    pub fn deinit(self: *WriteAheadLogger) void {
         self.fd.close();
     }
 
+    pub fn flush(self: *WriteAheadLogger) !void {
+        self.fd.sync();
+    }
+
+    pub fn writeEvent(self: *WriteAheadLogger, event: Event) !void {
+        const buffer = try event.encode(self.allocator);
+        defer self.allocator.free(buffer);
+        try self.write(buffer);
+    }
+
     // Reads a block from the file, at current position and decodes it into a list of records
-    pub fn readBlock(self: *WriteAheadLog) ![]Record {
+    fn readBlock(self: *WriteAheadLogger) ![]Record {
         const buffer = self.allocator.alloc(u8, self.block_size) catch unreachable;
         defer self.allocator.free(buffer);
         _ = try self.fd.readAll(buffer);
@@ -142,7 +187,7 @@ pub const WriteAheadLog = struct {
         return records.toOwnedSlice();
     }
 
-    pub fn write(self: *WriteAheadLog, payload: []const u8) !void {
+    fn write(self: *WriteAheadLogger, payload: []const u8) !void {
         const records = self.encode(payload);
         defer self.allocator.free(records);
 
@@ -176,7 +221,7 @@ pub const WriteAheadLog = struct {
         }
     }
 
-    fn lastBlockSpaceLeft(self: *WriteAheadLog) usize {
+    fn lastBlockSpaceLeft(self: *WriteAheadLogger) usize {
         const seek_back: i64 = -@as(i64, @intCast(self.block_size));
         const curr_pos = self.fd.getPos() catch unreachable;
 
@@ -194,7 +239,7 @@ pub const WriteAheadLog = struct {
         return self.block_size - last_block_offset;
     }
 
-    fn encode(self: *WriteAheadLog, payload: []const u8) []Record {
+    fn encode(self: *WriteAheadLogger, payload: []const u8) []Record {
         const length = payload.len;
         const header_length = Record.header_size();
 
@@ -250,13 +295,13 @@ test "Record encode/decode" {
     try record.encode(buffer);
 
     const decoded_record = try Record.decode(buffer);
-    try testing.expect(std.mem.eql(u8, record.data, decoded_record.data));
+    try testing.expect(mem.eql(u8, record.data, decoded_record.data));
     try testing.expectEqual(record.checksum, decoded_record.checksum);
     try testing.expectEqual(record.length, decoded_record.length);
     try testing.expectEqual(record.record_type, decoded_record.record_type);
 }
 
-test "WriteAheadLog write" {
+test "WriteAheadLogger write" {
     fs.cwd().deleteFile("test.wal") catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
@@ -265,7 +310,7 @@ test "WriteAheadLog write" {
     const block_size = 32 * @sizeOf(u8);
 
     const allocator = std.testing.allocator;
-    var wal = try WriteAheadLog.init(&allocator, .{
+    var wal = try WriteAheadLogger.init(&allocator, .{
         .file_dir = fs.cwd(),
         .file_name = "test.wal",
         .block_size = block_size,
@@ -282,4 +327,22 @@ test "WriteAheadLog write" {
 
     const stat = try wal.fd.stat();
     try testing.expectEqual(stat.size, block_size * 5);
+}
+
+test "Event encode/decode" {
+    const allocator = std.testing.allocator;
+    const write_event = Event{ .write = .{ .key = "hello", .value = "world" } };
+    const buffer = try write_event.encode(&allocator);
+    defer allocator.free(buffer);
+    const decoded_event = try Event.decode(buffer, allocator);
+    defer decoded_event.deinit();
+    try testing.expect(mem.eql(u8, write_event.write.key, decoded_event.value.write.key));
+    try testing.expect(mem.eql(u8, write_event.write.value, decoded_event.value.write.value));
+
+    const delete_event = Event{ .delete = .{ .key = "hello" } };
+    const delete_event_buffer = try delete_event.encode(&allocator);
+    defer allocator.free(delete_event_buffer);
+    const decoded_delete_event = try Event.decode(delete_event_buffer, allocator);
+    defer decoded_delete_event.deinit();
+    try testing.expect(mem.eql(u8, delete_event.delete.key, decoded_delete_event.value.delete.key));
 }
