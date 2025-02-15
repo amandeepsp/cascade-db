@@ -1,131 +1,22 @@
 const std = @import("std");
-const msgpack = @import("msgpack");
 const fs = std.fs;
-const log = std.log;
 const testing = std.testing;
-const hash = std.hash;
-const mem = std.mem;
+const atomic = std.atomic;
+const log = std.log.scoped(.wal);
+const io = std.io;
 const Allocator = std.mem.Allocator;
-const EventType = enum(u8) {
-    write = 1,
-    delete = 2,
-};
+const Record = @import("record.zig").Record;
+const Event = @import("record.zig").Event;
+const RecordType = @import("record.zig").RecordType;
 
-const WriteEvent = struct {
-    key: []const u8,
-    value: []const u8,
-};
-
-const DeleteEvent = struct {
-    key: []const u8,
-};
-
-const Event = union(EventType) {
-    write: WriteEvent,
-    delete: DeleteEvent,
-
-    pub fn encode(self: Event, allocator: *const Allocator) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator.*);
-        const writer = buffer.writer();
-
-        try msgpack.encode(self, writer);
-        return buffer.toOwnedSlice();
-    }
-
-    pub fn decode(buffer: []const u8, allocator: Allocator) !msgpack.Decoded(Event) {
-        var stream = std.io.fixedBufferStream(buffer);
-        const reader = stream.reader();
-
-        //TODO: Maybe replace with decodeLeaky with an arena allocator, when multiple events are decoded
-        return try msgpack.decode(Event, allocator, reader);
-    }
-};
-
-// WAL format adapted form https://github.com/facebook/rocksdb/wiki/Write-Ahead-Log-File-Format
 pub const WalOptions = struct {
     file_dir: fs.Dir = fs.cwd(),
     file_name: []const u8 = "wal.log",
     block_size: usize = 32 * 1024 * @sizeOf(u8), // 32KB
 };
 
-// Since block_size is fixed, a record could get broken into multiple blocks,
-// to reconstruct, we need info where does the record start and end.
-const RecordType = enum(u8) {
-    FULL = 1,
-    FIRST = 2,
-    MIDDLE = 3,
-    LAST = 4,
-};
-
-const Record = struct {
-    // +---------+-------------+------------+--- ... ---+
-    // |CRC (u32) | Size (u16) | Type (u8) | Payload   |
-    // +---------+-------------+------------+--- ... ---+
-    // CRC = 32bit hash computed over the payload using CRC
-    // Size = Length of the payload data
-    // Type = Type of record, FULL, FIRST, MIDDLE, or LAST
-    //       The type is used to group a bunch of records together to represent
-    //       blocks that are larger than kBlockSize
-    // Payload = Byte stream as long as specified by the payload size
-    checksum: u32,
-    length: u16,
-    record_type: RecordType,
-    data: []const u8,
-
-    pub fn size(self: *const Record) usize {
-        return @sizeOf(u32) + @sizeOf(u16) + @sizeOf(u8) + self.length;
-    }
-
-    pub fn header_size() usize {
-        return @sizeOf(u32) + @sizeOf(u16) + @sizeOf(u8);
-    }
-
-    pub fn init(payload: []const u8, record_type: RecordType) Record {
-        const checksum = hash.Crc32.hash(payload);
-        return Record{
-            .checksum = checksum,
-            .length = @intCast(payload.len),
-            .record_type = record_type,
-            .data = payload,
-        };
-    }
-
-    pub fn encode(self: *const Record, buffer: []u8) !void {
-        var buffer_stream = std.io.fixedBufferStream(buffer);
-        var buffer_writer = buffer_stream.writer();
-
-        try buffer_writer.writeInt(u32, self.checksum, .little);
-        try buffer_writer.writeInt(u16, @truncate(self.length), .little);
-        try buffer_writer.writeInt(u8, @intFromEnum(self.record_type), .little);
-        try buffer_writer.writeAll(self.data);
-    }
-
-    pub fn decode(buffer: []const u8) !Record {
-        const header_len = Record.header_size();
-        var buffer_stream = std.io.fixedBufferStream(buffer);
-        var buffer_reader = buffer_stream.reader();
-
-        const checksum = try buffer_reader.readInt(u32, .little);
-        const length = try buffer_reader.readInt(u16, .little);
-        if (length == 0) {
-            return error.InvalidRecord;
-        }
-        const record_type_int: u8 = try buffer_reader.readInt(u8, .little);
-        const record_type: RecordType = std.meta.intToEnum(RecordType, record_type_int) catch {
-            return error.InvalidRecord;
-        };
-        const data = buffer[header_len..(header_len + length)];
-
-        return Record{
-            .checksum = checksum,
-            .length = length,
-            .record_type = record_type,
-            .data = data,
-        };
-    }
-};
-
 pub const WriteAheadLogger = struct {
+    // WAL format adapted form https://github.com/facebook/rocksdb/wiki/Write-Ahead-Log-File-Format
     //       +-----+-------------+--+----+----------+------+-- ... ----+
     // File  | r0  |        r1   |P | r2 |    r3    |  r4  |           |
     //       +-----+-------------+--+----+----------+------+-- ... ----+
@@ -133,11 +24,21 @@ pub const WriteAheadLogger = struct {
 
     // rn = variable size records
     // P = Padding
-    allocator: *const Allocator,
+
+    // A fixed block size has some drawbacks, i.e. wasted space if the records are small, block read/write overhead is
+    // same for all types of workloads. But it has the advantage of simplicity and I/O performance because of better
+    // alignment with os and device blocks, and better cache locality.
+
+    // TODO: Implement recycling blocks when a write is committed. Need to keep track of the log seq number and only
+    // recycle blocks that have been flushed to disk.
+
+    // TODO: Investigate various i/o techniques, e.g. direct i/o, mmap, etc.
+
+    allocator: Allocator,
     fd: fs.File,
     block_size: usize,
 
-    pub fn init(allocator: *const Allocator, options: WalOptions) !WriteAheadLogger {
+    pub fn init(allocator: Allocator, options: WalOptions) !WriteAheadLogger {
         const fd = try options.file_dir.createFile(
             options.file_name,
             .{ .read = true, .truncate = false },
@@ -157,27 +58,16 @@ pub const WriteAheadLogger = struct {
     }
 
     pub fn flush(self: *WriteAheadLogger) !void {
-        self.fd.sync();
+        try self.fd.sync();
     }
 
-    pub fn writeEvent(self: *WriteAheadLogger, event: Event) !void {
-        const buffer = try event.encode(self.allocator);
-        defer self.allocator.free(buffer);
-        try self.write(buffer);
-    }
-
-    // Reads a block from the file, at current position and decodes it into a list of records
-    fn readBlock(self: *WriteAheadLogger) ![]Record {
-        const buffer = self.allocator.alloc(u8, self.block_size) catch unreachable;
-        defer self.allocator.free(buffer);
-        _ = try self.fd.readAll(buffer);
-
+    pub fn read(self: *WriteAheadLogger, buffer: []u8) ![]Record {
         var decode_offset: usize = 0;
         var records = std.ArrayList(Record).init(self.allocator.*);
         errdefer records.deinit();
         while (decode_offset < self.block_size) {
             const record = Record.decode(buffer[decode_offset..]) catch {
-                log.info("Failed to decode record at offset, hit block padding {d}", .{decode_offset});
+                log.info("Failed to decode record at offset, hit block padding={d}", .{decode_offset});
                 break;
             };
             records.append(record) catch unreachable;
@@ -187,19 +77,13 @@ pub const WriteAheadLogger = struct {
         return records.toOwnedSlice();
     }
 
-    fn write(self: *WriteAheadLogger, payload: []const u8) !void {
+    pub fn write(self: *WriteAheadLogger, payload: []const u8) !void {
         const records = self.encode(payload);
         defer self.allocator.free(records);
 
         for (records) |record| {
             const curr_end_pos: usize = self.fd.getEndPos() catch unreachable;
-            self.fd.seekFromEnd(0) catch unreachable;
-            var last_block_space_left: usize = 0;
-            if (curr_end_pos < self.block_size) {
-                last_block_space_left = 0; // First block, no last block exists
-            } else {
-                last_block_space_left = self.lastBlockSpaceLeft();
-            }
+            const last_block_space_left = self.block_size - (curr_end_pos % self.block_size);
 
             const buffer = self.allocator.alloc(u8, record.size()) catch unreachable;
             defer self.allocator.free(buffer);
@@ -210,33 +94,13 @@ pub const WriteAheadLogger = struct {
 
             if (record.size() <= last_block_space_left) {
                 // We can fit the record in the last block
-                self.fd.seekBy(-@as(i64, @intCast(last_block_space_left))) catch unreachable;
                 try fd_writer.writeAll(buffer);
-                try fd_writer.writeByteNTimes(0, last_block_space_left - record.size());
             } else {
                 // We need to write to a new block
+                try fd_writer.writeByteNTimes(0, last_block_space_left);
                 try fd_writer.writeAll(buffer);
-                try fd_writer.writeByteNTimes(0, self.block_size - record.size());
             }
         }
-    }
-
-    fn lastBlockSpaceLeft(self: *WriteAheadLogger) usize {
-        const seek_back: i64 = -@as(i64, @intCast(self.block_size));
-        const curr_pos = self.fd.getPos() catch unreachable;
-
-        self.fd.seekFromEnd(seek_back) catch unreachable;
-        const last_block_records = self.readBlock() catch |err| {
-            log.err("Error reading last block: {s}\n{?}", .{ @errorName(err), @errorReturnTrace() });
-            return 0;
-        };
-        defer self.allocator.free(last_block_records);
-        var last_block_offset: usize = 0;
-        for (last_block_records) |record| {
-            last_block_offset += record.size();
-        }
-        self.fd.seekTo(curr_pos) catch unreachable;
-        return self.block_size - last_block_offset;
     }
 
     fn encode(self: *WriteAheadLogger, payload: []const u8) []Record {
@@ -281,28 +145,8 @@ pub const WriteAheadLogger = struct {
     }
 };
 
-test "Record encode/decode" {
-    const allocator = std.testing.allocator;
-    const record = Record{
-        .checksum = 0x12345678,
-        .length = 5,
-        .record_type = .FULL,
-        .data = "hello",
-    };
-
-    const buffer = try allocator.alloc(u8, record.size());
-    defer allocator.free(buffer);
-    try record.encode(buffer);
-
-    const decoded_record = try Record.decode(buffer);
-    try testing.expect(mem.eql(u8, record.data, decoded_record.data));
-    try testing.expectEqual(record.checksum, decoded_record.checksum);
-    try testing.expectEqual(record.length, decoded_record.length);
-    try testing.expectEqual(record.record_type, decoded_record.record_type);
-}
-
 test "WriteAheadLogger write" {
-    fs.cwd().deleteFile("test.wal") catch |err| switch (err) {
+    fs.cwd().deleteFile("test.log") catch |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     };
@@ -310,9 +154,9 @@ test "WriteAheadLogger write" {
     const block_size = 32 * @sizeOf(u8);
 
     const allocator = std.testing.allocator;
-    var wal = try WriteAheadLogger.init(&allocator, .{
+    var wal = try WriteAheadLogger.init(allocator, .{
         .file_dir = fs.cwd(),
-        .file_name = "test.wal",
+        .file_name = "test.log",
         .block_size = block_size,
     });
     defer wal.deinit();
@@ -323,26 +167,8 @@ test "WriteAheadLogger write" {
     try wal.write("hel0");
     try wal.write("hello, world");
     try wal.write("hello, world-6");
-    try wal.write("hel1");
+    try wal.write("lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua");
 
     const stat = try wal.fd.stat();
-    try testing.expectEqual(stat.size, block_size * 5);
-}
-
-test "Event encode/decode" {
-    const allocator = std.testing.allocator;
-    const write_event = Event{ .write = .{ .key = "hello", .value = "world" } };
-    const buffer = try write_event.encode(&allocator);
-    defer allocator.free(buffer);
-    const decoded_event = try Event.decode(buffer, allocator);
-    defer decoded_event.deinit();
-    try testing.expect(mem.eql(u8, write_event.write.key, decoded_event.value.write.key));
-    try testing.expect(mem.eql(u8, write_event.write.value, decoded_event.value.write.value));
-
-    const delete_event = Event{ .delete = .{ .key = "hello" } };
-    const delete_event_buffer = try delete_event.encode(&allocator);
-    defer allocator.free(delete_event_buffer);
-    const decoded_delete_event = try Event.decode(delete_event_buffer, allocator);
-    defer decoded_delete_event.deinit();
-    try testing.expect(mem.eql(u8, delete_event.delete.key, decoded_delete_event.value.delete.key));
+    try testing.expectEqual(stat.size, 315); // Last block is not padded.
 }
