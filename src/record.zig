@@ -1,5 +1,4 @@
 const std = @import("std");
-const msgpack = @import("msgpack");
 const hash = std.hash;
 const mem = std.mem;
 const testing = std.testing;
@@ -23,40 +22,67 @@ pub const Event = union(EventType) {
     write: WriteEvent,
     delete: DeleteEvent,
 
-    pub fn encode(self: Event, allocator: Allocator) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        const writer = buffer.writer();
+    // Serializes the event into a buffer, in little endian format.
+    // +---------+-------------+------------+--- ... ---+-----------------+------...--------+
+    // |event type (u8) | key len (u32) | key (n bytes) | value len (u32) | value (m bytes) |
+    // +---------+-------------+------------+--- ... ---+-----------------+------...-------+
 
-        try msgpack.encode(self, writer);
-        return buffer.toOwnedSlice();
+    pub fn serialize(self: Event, buffer: []u8) !void {
+        var stream = std.io.fixedBufferStream(buffer);
+        var writer = stream.writer();
+        switch (self) {
+            .write => |we| {
+                try writer.writeInt(u8, @intFromEnum(EventType.write), .little);
+                try writer.writeInt(u32, @intCast(we.key.len), .little);
+                try writer.writeAll(we.key);
+                try writer.writeInt(u32, @intCast(we.value.len), .little);
+                try writer.writeAll(we.value);
+            },
+            .delete => |de| {
+                try writer.writeInt(u8, @intFromEnum(EventType.delete), .little);
+                try writer.writeInt(u32, @intCast(de.key.len), .little);
+                try writer.writeAll(de.key);
+            },
+        }
     }
 
-    pub fn decode(buffer: []const u8, allocator: Allocator) !msgpack.Decoded(Event) {
-        var stream = std.io.fixedBufferStream(buffer);
-        const reader = stream.reader();
+    pub fn size(self: Event) usize {
+        switch (self) {
+            .write => |we| {
+                return @sizeOf(u8) + @sizeOf(u32) + we.key.len + @sizeOf(u32) + we.value.len;
+            },
+            .delete => |de| {
+                return @sizeOf(u8) + @sizeOf(u32) + de.key.len;
+            },
+        }
+    }
 
-        //TODO: Maybe replace with decodeLeaky with an arena allocator, when multiple events are decoded
-        return try msgpack.decode(Event, allocator, reader);
+    pub fn deserialize(buffer: []const u8) !Event {
+        var stream = std.io.fixedBufferStream(buffer);
+        var reader = stream.reader();
+
+        const tag_val = try reader.readInt(u8, .little);
+        const event_type = std.meta.intToEnum(EventType, tag_val) catch {
+            return error.InvalidEvent;
+        };
+        var offset: usize = @sizeOf(u8);
+
+        // Read key length and data
+        const key_len: u32 = try reader.readInt(u32, .little);
+        offset += @sizeOf(u32);
+        const key = buffer[offset .. offset + key_len];
+        offset += @intCast(key_len);
+
+        if (event_type == EventType.write) {
+            const value_len: u32 = try reader.readInt(u32, .little);
+            offset += @sizeOf(u32);
+            const value = buffer[offset .. offset + value_len];
+            return Event{ .write = WriteEvent{ .key = key, .value = value } };
+        } else {
+            return Event{ .delete = DeleteEvent{ .key = key } };
+        }
     }
 };
-
-test "Event encode/decode" {
-    const allocator = std.testing.allocator;
-    const write_event = Event{ .write = .{ .key = "hello", .value = "world" } };
-    const buffer = try write_event.encode(allocator);
-    defer allocator.free(buffer);
-    const decoded_event = try Event.decode(buffer, allocator);
-    defer decoded_event.deinit();
-    try testing.expect(mem.eql(u8, write_event.write.key, decoded_event.value.write.key));
-    try testing.expect(mem.eql(u8, write_event.write.value, decoded_event.value.write.value));
-
-    const delete_event = Event{ .delete = .{ .key = "hello" } };
-    const delete_event_buffer = try delete_event.encode(allocator);
-    defer allocator.free(delete_event_buffer);
-    const decoded_delete_event = try Event.decode(delete_event_buffer, allocator);
-    defer decoded_delete_event.deinit();
-    try testing.expect(mem.eql(u8, delete_event.delete.key, decoded_delete_event.value.delete.key));
-}
 
 // Since block_size is fixed, a record could get broken into multiple blocks,
 // to reconstruct, we need info where does the record start and end.

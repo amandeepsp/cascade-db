@@ -59,7 +59,8 @@ fn openOrCreateRootDir(root_dir: []const u8) !fs.Dir {
 
 pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
     const event = Event{ .write = .{ .key = key, .value = value } };
-    const encoded_event = event.encode(self.allocator) catch unreachable;
+    const encoded_event = self.allocator.alloc(u8, event.size()) catch unreachable;
+    event.serialize(encoded_event) catch unreachable;
     defer self.allocator.free(encoded_event);
     self.wal.write(encoded_event) catch unreachable;
 
@@ -72,7 +73,8 @@ pub fn get(self: *Self, key: []const u8) ![]const u8 {
 
 pub fn remove(self: *Self, key: []const u8) !void {
     const event = Event{ .delete = .{ .key = key } };
-    const encoded_event = event.encode(self.allocator) catch unreachable;
+    const encoded_event = self.allocator.alloc(u8, event.size()) catch unreachable;
+    event.serialize(encoded_event) catch unreachable;
     defer self.allocator.free(encoded_event);
     self.wal.write(encoded_event) catch unreachable;
 

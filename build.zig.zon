@@ -1,12 +1,8 @@
 .{
-    .name = "cascade-db",
+    .name = .cascade_db,
     .version = "0.0.0",
-    .dependencies = .{
-        .msgpack = .{
-            .url = "git+https://github.com/lalinsky/msgpack.zig?ref=zig-0.13#202583c0163378dbceb146ec7764f7a4f98e8889",
-            .hash = "12209b73a2e37b0780749be84fe3fe4b178b07f8dd653573aafc2566e80eb2a6a052",
-        },
-    },
+    .minimum_zig_version = "0.14.0",
+    .fingerprint = 0x6cec4ff074ca0dff,
     .paths = .{
         "src",
         "build.zig",

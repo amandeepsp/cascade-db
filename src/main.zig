@@ -3,7 +3,7 @@ const DB = @import("db.zig");
 const repl = @import("repl.zig");
 const logging = @import("logging.zig");
 
-pub const std_options = .{
+pub const std_options = std.Options{
     .log_level = .info,
     .logFn = logging.ansiLogFn,
 };

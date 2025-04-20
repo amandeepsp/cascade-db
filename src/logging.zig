@@ -11,7 +11,7 @@ const AnsiCodes = enum {
     default_fg,
 
     //TODO: Codes can be joined in a sinnge esape seq like, ESC[1;31;{...}m
-    pub const AnsiCodeTable = [@typeInfo(AnsiCodes).Enum.fields.len][:0]const u8{
+    pub const AnsiCodeTable = [@typeInfo(AnsiCodes).@"enum".fields.len][:0]const u8{
         "\x1b[0m",
         "\x1b[1m",
         "\x1b[22m",
@@ -28,7 +28,7 @@ const AnsiCodes = enum {
 
 pub fn ansiLogFn(
     comptime level: std.log.Level,
-    comptime scope: @Type(.EnumLiteral),
+    comptime scope: @Type(.enum_literal),
     comptime format: []const u8,
     args: anytype,
 ) void {
