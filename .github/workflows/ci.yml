@@ -8,13 +8,13 @@ on:
 
 jobs:
   build:
-    runs-on: blacksmith-2vcpu-ubuntu-2204
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Zig
-        uses: useblacksmith/setup-zig@v3
+        uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.14.0
 
