@@ -98,7 +98,7 @@ pub fn deinit(self: *Self) void {
 pub fn find(self: *Self, key: []const u8) SkipListErrors![]const u8 {
     var current: ?*Node = self.head;
     var i = self.level;
-    while (i >= 0) : (i -= 1) {
+    while (i >= 0) : (i -|= 1) {
         while (current.?.forward[i]) |next_node| {
             if (!strLessThan(next_node.key, key)) break;
             current = next_node;
@@ -119,7 +119,7 @@ pub fn insert(self: *Self, key: []const u8, value: []const u8) SkipListErrors!vo
     var update: [max_levels]?*Node = undefined;
     @memset(update[0..], null);
     var i = self.level;
-    while (i >= 0) : (i -= 1) {
+    while (i >= 0) : (i -|= 1) {
         while (current.?.forward[i]) |next_node| {
             if (!strLessThan(next_node.key, key)) break;
             current = next_node;
@@ -158,7 +158,7 @@ pub fn remove(self: *Self, key: []const u8) SkipListErrors!void {
     var update: [max_levels]?*Node = undefined;
     @memset(update[0..], null);
     var i = self.level;
-    while (i >= 0) : (i -= 1) {
+    while (i >= 0) : (i -|= 1) {
         while (current.?.forward[i]) |next_node| {
             if (!strLessThan(next_node.key, key)) break;
             current = next_node;
@@ -181,7 +181,7 @@ pub fn remove(self: *Self, key: []const u8) SkipListErrors!void {
         current.?.deinit(self.allocator);
 
         while (self.level >= 0 and self.head.forward[self.level] == null) {
-            self.level -= 1;
+            self.level -|= 1;
             if (self.level == 0) break;
         }
     } else {
