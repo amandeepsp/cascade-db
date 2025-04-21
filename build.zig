@@ -11,6 +11,19 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    exe.linkLibC();
+
+    // linenoise
+    const linenoise_dep = b.dependency("linenoise", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.addCSourceFile(.{
+        .file = linenoise_dep.path("linenoise.c"),
+        .flags = &[_][]const u8{"-std=c99"},
+    });
+    exe.addIncludePath(linenoise_dep.path(""));
+
     b.installArtifact(exe);
 
     const tests = b.addTest(.{

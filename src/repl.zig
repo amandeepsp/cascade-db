@@ -4,27 +4,43 @@ const io = std.io;
 const fs = std.fs;
 const log = std.log.scoped(.repl);
 
-const DB = @import("db.zig");
+const DB = @import("Db.zig");
+
+const repl = @cImport({
+    @cInclude("stddef.h");
+    @cInclude("linenoise.h");
+});
 
 pub fn repl_loop(db: *DB) !void {
-    const stdin = io.getStdIn();
     const stdout = io.getStdOut();
 
-    const prompt = "cascade> ";
-    var line_buffer: [1024]u8 = undefined;
+    try stdout.writeAll("Cascase DB, (type 'exit' to quit)\n");
+
+    _ = repl.linenoiseHistoryLoad(".repl_history");
+    defer _ = repl.linenoiseHistorySave(".repl_history");
 
     while (true) {
-        stdout.writeAll(prompt) catch unreachable;
-        @memset(&line_buffer, 0);
-        const line = try stdin.reader().readUntilDelimiterOrEof(&line_buffer, '\n') orelse "";
-        const command = mem.trim(u8, line, " \t\r\n");
-        if (command.len == 0) {
+        const command_input = repl.linenoise("cascade> ");
+        defer std.c.free(command_input);
+
+        if (command_input == null) {
             continue;
+        }
+
+        const command = std.mem.span(command_input);
+
+        if (command.len > 0) {
+            _ = repl.linenoiseHistoryAdd(command);
         }
 
         if (mem.eql(u8, command, "exit")) {
             stdout.writeAll("bye ;)\n") catch unreachable;
             break;
+        }
+
+        if (mem.eql(u8, command, "clear")) {
+            repl.linenoiseClearScreen();
+            continue;
         }
 
         if (mem.startsWith(u8, command, "get")) {

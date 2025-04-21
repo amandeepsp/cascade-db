@@ -1,6 +1,6 @@
 const std = @import("std");
 const mem = std.mem;
-const SkipList = @import("skiplist.zig");
+const SkipList = @import("Skiplist.zig");
 
 const Self = @This();
 

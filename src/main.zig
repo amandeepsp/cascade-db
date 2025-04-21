@@ -1,5 +1,5 @@
 const std = @import("std");
-const DB = @import("db.zig");
+const DB = @import("Db.zig");
 const repl = @import("repl.zig");
 const logging = @import("logging.zig");
 

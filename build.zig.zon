@@ -8,4 +8,10 @@
         "build.zig",
         "build.zig.zon",
     },
+    .dependencies = .{
+        .linenoise = .{
+            .url = "https://github.com/antirez/linenoise/archive/refs/tags/1.0.tar.gz",
+            .hash = "N-V-__8AAC-xAADRqwCkPRV-sUEyGaeYsN3uEE4uVrGoTc03",
+        },
+    },
 }

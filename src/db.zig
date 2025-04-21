@@ -5,9 +5,10 @@ const fs = std.fs;
 const path = std.fs.path;
 const io = std.io;
 const assert = std.debug.assert;
-const Memtable = @import("memtable.zig");
-const WriteAheadLogger = @import("wal.zig").WriteAheadLogger;
+const Memtable = @import("Memtable.zig");
+const WriteAheadLogger = @import("WriteAheadLogger.zig");
 const Event = @import("record.zig").Event;
+
 pub const DBOptions = struct {
     root_dir: []const u8,
     memtable_flush_limit: usize = 100,

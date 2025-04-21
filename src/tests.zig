@@ -1,5 +1,5 @@
 comptime {
-    _ = @import("skiplist.zig");
-    _ = @import("wal.zig");
+    _ = @import("Skiplist.zig");
+    _ = @import("WriteAheadLogger.zig");
     _ = @import("record.zig");
 }
