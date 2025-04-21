@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     });
     exe.addCSourceFile(.{
         .file = linenoise_dep.path("linenoise.c"),
-        .flags = &[_][]const u8{"-std=c99"},
+        .flags = &[_][]const u8{},
     });
     exe.addIncludePath(linenoise_dep.path(""));
 
