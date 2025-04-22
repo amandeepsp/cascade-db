@@ -8,7 +8,6 @@ const assert = std.debug.assert;
 const Memtable = @import("Memtable.zig");
 const WriteAheadLogger = @import("WriteAheadLogger.zig");
 const Event = @import("record.zig").Event;
-
 pub const DBOptions = struct {
     root_dir: []const u8,
     memtable_flush_limit: usize = 100,

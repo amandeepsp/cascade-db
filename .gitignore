@@ -1,6 +1,6 @@
 .zig-cache/
 zig-out/
 .vscode/
-.repl_history
 *.log
 *.wal
+.repl_history
